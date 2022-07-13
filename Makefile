@@ -2,16 +2,16 @@
 # You need emsdk environment installed and activated, see:
 # <https://kripken.github.io/emscripten-site/docs/getting_started/downloads.html>.
 
-PRE_JS = build/pre.js
-POST_JS_SYNC = build/post-sync.js
-POST_JS_WORKER = build/post-worker.js
+PRE_JS = $(PWD)/build/pre.js
+POST_JS_SYNC = $(PWD)/build/post-sync.js
+POST_JS_WORKER = $(PWD)/build/post-worker.js
 
-COMMON_FILTERS = aresample scale crop overlay hstack vstack
+COMMON_FILTERS = aresample scale crop overlay hstack vstack compand showwavespic
 COMMON_DEMUXERS = matroska ogg mov mp3 wav image2 concat
 COMMON_DECODERS = vp8 h264 vorbis opus mp3 aac pcm_s16le mjpeg png
 
 WEBM_MUXERS = webm ogg null
-WEBM_ENCODERS = libvpx_vp8 libopus
+WEBM_ENCODERS = libvpx_vp8 libopus png
 FFMPEG_WEBM_BC = build/ffmpeg-webm/ffmpeg.bc
 FFMPEG_WEBM_PC_PATH = ../opus/dist/lib/pkgconfig
 WEBM_SHARED_DEPS = \
@@ -19,12 +19,12 @@ WEBM_SHARED_DEPS = \
 	build/libvpx/dist/lib/libvpx.so
 
 MP4_MUXERS = mp4 mp3 null
-MP4_ENCODERS = libx264 libmp3lame aac
+MP4_ENCODERS = libx264 libmp3lame aac png
 FFMPEG_MP4_BC = build/ffmpeg-mp4/ffmpeg.bc
 FFMPEG_MP4_PC_PATH = ../x264/dist/lib/pkgconfig
 MP4_SHARED_DEPS = \
-	build/lame/dist/lib/libmp3lame.so \
-	build/x264/dist/lib/libx264.so
+	$(PWD)/build/lame/dist/lib/libmp3lame.so \
+	$(PWD)/build/x264/dist/lib/libx264.so
 
 all: webm mp4
 webm: ffmpeg-webm.js ffmpeg-worker-webm.js
@@ -159,23 +159,19 @@ FFMPEG_COMMON_ARGS = \
 	--disable-debug \
 	--disable-stripping \
 	--disable-safe-bitstream-reader \
+	--disable-avdevice \
 	\
-	--disable-all \
 	--enable-ffmpeg \
 	--enable-avcodec \
 	--enable-avformat \
 	--enable-avfilter \
 	--enable-swresample \
 	--enable-swscale \
-	--disable-network \
 	--disable-d3d11va \
 	--disable-dxva2 \
 	--disable-vaapi \
 	--disable-vdpau \
-	$(addprefix --enable-decoder=,$(COMMON_DECODERS)) \
-	$(addprefix --enable-demuxer=,$(COMMON_DEMUXERS)) \
 	--enable-protocol=file \
-	$(addprefix --enable-filter=,$(COMMON_FILTERS)) \
 	--disable-bzlib \
 	--disable-iconv \
 	--disable-libxcb \
@@ -199,20 +195,17 @@ build/ffmpeg-webm/ffmpeg.bc: $(WEBM_SHARED_DEPS)
 	emmake make -j && \
 	cp ffmpeg ffmpeg.bc
 
-build/ffmpeg-mp4/ffmpeg.bc: $(MP4_SHARED_DEPS)
+build/ffmpeg-mp4/ffmpeg: $(MP4_SHARED_DEPS)
 	cd build/ffmpeg-mp4 && \
 	EM_PKG_CONFIG_PATH=$(FFMPEG_MP4_PC_PATH) emconfigure ./configure \
 		$(FFMPEG_COMMON_ARGS) \
-		$(addprefix --enable-encoder=,$(MP4_ENCODERS)) \
-		$(addprefix --enable-muxer=,$(MP4_MUXERS)) \
 		--enable-gpl \
 		--enable-libmp3lame \
 		--enable-libx264 \
 		--extra-cflags="-s USE_ZLIB=1 -I../lame/dist/include" \
 		--extra-ldflags="-L../lame/dist/lib" \
 		&& \
-	emmake make -j && \
-	cp ffmpeg ffmpeg.bc
+	emmake make -j
 
 EMCC_COMMON_ARGS = \
 	-O3 \
@@ -225,7 +218,10 @@ EMCC_COMMON_ARGS = \
 	-s NODEJS_CATCH_EXIT=0 \
 	-s NODEJS_CATCH_REJECTION=0 \
 	-s TOTAL_MEMORY=67108864 \
-	-lnodefs.js -lworkerfs.js \
+	-s INITIAL_MEMORY=134217728 \
+	-s ALLOW_MEMORY_GROWTH=1 \
+	-s ABORTING_MALLOC=0 \
+	-lworkerfs.js \
 	--pre-js $(PRE_JS) \
 	-o $@
 
@@ -244,7 +240,20 @@ ffmpeg-mp4.js: $(FFMPEG_MP4_BC) $(PRE_JS) $(POST_JS_SYNC)
 		--post-js $(POST_JS_SYNC) \
 		$(EMCC_COMMON_ARGS) -O2
 
-ffmpeg-worker-mp4.js: $(FFMPEG_MP4_BC) $(PRE_JS) $(POST_JS_WORKER)
-	emcc $(FFMPEG_MP4_BC) $(MP4_SHARED_DEPS) \
+ffmpeg-worker-mp4.js: $(PRE_JS) $(POST_JS_WORKER)
+	cd build/ffmpeg-mp4 && \
+	rm ffmpeg* || true && \
+	emcc $(MP4_SHARED_DEPS) \
 		--post-js $(POST_JS_WORKER) \
-		$(EMCC_COMMON_ARGS) -O2
+		$(EMCC_COMMON_ARGS) -O2 \
+		-Llibavcodec -Llibavdevice -Llibavfilter \
+		-Llibavformat -Llibavresample -Llibavutil \
+		-Llibpostproc -Llibswscale -Llibswresample -L../lame/dist/lib  \
+		-Qunused-arguments   \
+		fftools/ffmpeg_opt.o fftools/ffmpeg_filter.o \
+		fftools/ffmpeg_hw.o fftools/cmdutils.o fftools/ffmpeg.o  \
+		-lavfilter -lavformat -lavcodec -lswresample -lswscale -lavutil  \
+		-lavdevice -lpostproc \
+		-lm -lz -lmp3lame -L/home/fam/src/ffmpeg.js/build/x264/dist/lib \
+		-lx264
+
